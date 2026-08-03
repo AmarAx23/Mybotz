@@ -1,7 +1,11 @@
-const { verifySignature, replyMessage } = require('../lib/line');
-const { ensureUser, setUserFields } = require('../lib/users');
-const { logWeight, logWaist, buildSummaryMessage, buildGraphMessage, buildTdeeMessage } = require('../lib/weight');
+const { verifySignature, replyMessage, getMessageContent } = require('../lib/line');
+const { ensureUser, setUserFields, getUserData } = require('../lib/users');
+const {
+  logWeight, deleteTodayWeight, logWaist, buildSummaryMessage, buildGraphMessage, buildTdeeMessage
+} = require('../lib/weight');
 const { startPlan, buildTodayPlanMessage } = require('../lib/healthplan');
+const { uploadProgressPhoto, getUserPhotos } = require('../lib/storage');
+const { todayStr } = require('../lib/calc');
 
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -13,12 +17,13 @@ function readRawBody(req) {
 }
 
 function helpText() {
-  return 'สวัสดี! ส่งตัวเลขน้ำหนัก เช่น "65.4" มาบันทึกได้เลย\n\n' +
+  return 'สวัสดี! ส่งตัวเลขน้ำหนัก เช่น "65.4" มาบันทึกได้เลย (ส่งซ้ำในวันเดียวกัน = แก้ไขค่าเดิม)\n\n' +
     'คำสั่งเกี่ยวกับน้ำหนัก:\n' +
     '• "เป้าหมาย 60" — ตั้งเป้าหมายน้ำหนัก\n' +
     '• "สรุป" — ดูสรุปความคืบหน้า\n' +
     '• "กราฟ" — ดูกราฟน้ำหนักย้อนหลัง\n' +
-    '• "รอบเอว 75" — บันทึกรอบเอว\n\n' +
+    '• "รอบเอว 75" — บันทึกรอบเอว\n' +
+    '• "ลบล่าสุด" — ลบข้อมูลน้ำหนักของวันนี้ทิ้ง\n\n' +
     'ตั้งค่าโปรไฟล์ (ใช้คำนวณ BMI/แคลอรี่):\n' +
     '• "ส่วนสูง 170"\n' +
     '• "อายุ 25"\n' +
@@ -27,12 +32,31 @@ function helpText() {
     '• "ทีดีอี" — ดูผล BMI / BMR / TDEE\n\n' +
     'แผนสุขภาพ 4 เดือน (จากไฟล์ที่ตั้งไว้):\n' +
     '• "เริ่มแผน" — เริ่มนับวันที่ 1 ของโปรแกรม\n' +
-    '• "วันนี้" — ดูเวท/วิ่ง + เมนูอาหารของวันนี้';
+    '• "วันนี้" — ดูเวท/วิ่งของวันนี้\n\n' +
+    'รูปความคืบหน้า:\n' +
+    '• ส่งรูปตัวเองมาได้เลย จะเก็บไว้ 1 รูป/วัน\n' +
+    '• "เปรียบเทียบรูป" — ดูรูปแรกกับล่าสุด';
 }
 
-async function handleEvent(event) {
-  if (event.type !== 'message' || event.message.type !== 'text') return;
+async function handleImageEvent(event) {
+  const userId = event.source.userId;
+  const replyToken = event.replyToken;
 
+  await ensureUser(userId);
+
+  try {
+    const buffer = await getMessageContent(event.message.id);
+    await uploadProgressPhoto(userId, todayStr(), buffer, 'image/jpeg');
+    await replyMessage(replyToken, [
+      { type: 'text', text: '📸 บันทึกรูปความคืบหน้าวันนี้แล้ว! พิมพ์ "เปรียบเทียบรูป" เพื่อดูรูปแรกกับล่าสุดได้' }
+    ]);
+  } catch (err) {
+    console.error('handleImageEvent error:', err);
+    await replyMessage(replyToken, [{ type: 'text', text: 'บันทึกรูปไม่สำเร็จ ลองส่งใหม่อีกครั้งนะ' }]);
+  }
+}
+
+async function handleTextEvent(event) {
   const userId = event.source.userId;
   const text = event.message.text.trim();
   const replyToken = event.replyToken;
@@ -51,6 +75,29 @@ async function handleEvent(event) {
     } else {
       await replyMessage(replyToken, [{ type: 'text', text: 'ยังไม่มีข้อมูลน้ำหนักพอสำหรับวาดกราฟเลยนะ ลองบันทึกน้ำหนักสัก 2-3 วันก่อน' }]);
     }
+    return;
+  }
+
+  if (/^(ลบน้ำหนักวันนี้|ลบล่าสุด|delete weight)/i.test(text)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await deleteTodayWeight(userId) }]);
+    return;
+  }
+
+  if (/^(เปรียบเทียบรูป|ดูรูป|before ?after|photos)/i.test(text)) {
+    const photos = await getUserPhotos(userId);
+    if (photos.length === 0) {
+      await replyMessage(replyToken, [{ type: 'text', text: 'ยังไม่มีรูปความคืบหน้าเลย ลองส่งรูปตัวเองมาเก็บไว้ดูก่อนนะ' }]);
+      return;
+    }
+    const first = photos[0];
+    const last = photos[photos.length - 1];
+    const messages = [{ type: 'text', text: `📸 เปรียบเทียบความคืบหน้า\nรูปแรก: ${first.log_date}` }];
+    messages.push({ type: 'image', originalContentUrl: first.public_url, previewImageUrl: first.public_url });
+    if (last.log_date !== first.log_date) {
+      messages.push({ type: 'text', text: `รูปล่าสุด: ${last.log_date}` });
+      messages.push({ type: 'image', originalContentUrl: last.public_url, previewImageUrl: last.public_url });
+    }
+    await replyMessage(replyToken, messages);
     return;
   }
 
@@ -109,7 +156,20 @@ async function handleEvent(event) {
     return;
   }
 
+  if (/^(ยืนยันเริ่มใหม่|confirm restart)/i.test(text)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await startPlan(userId) }]);
+    return;
+  }
+
   if (/^(เริ่มแผน|start plan)/i.test(text)) {
+    const user = await getUserData(userId);
+    if (user && user.program_start_date) {
+      await replyMessage(replyToken, [{
+        type: 'text',
+        text: `คุณเริ่มแผนไปแล้วตั้งแต่วันที่ ${user.program_start_date}\nถ้าต้องการรีเซ็ตเริ่มใหม่ (นับวันที่ 1 ใหม่ และตั้งโปรไฟล์/เป้าหมายกลับเป็นค่าเริ่มต้นจากแผน) พิมพ์ "ยืนยันเริ่มใหม่"`
+      }]);
+      return;
+    }
     await replyMessage(replyToken, [{ type: 'text', text: await startPlan(userId) }]);
     return;
   }
@@ -134,6 +194,18 @@ async function handleEvent(event) {
   }
 
   await replyMessage(replyToken, [{ type: 'text', text: helpText() }]);
+}
+
+async function handleEvent(event) {
+  if (event.type !== 'message') return;
+  if (event.message.type === 'text') {
+    await handleTextEvent(event);
+    return;
+  }
+  if (event.message.type === 'image') {
+    await handleImageEvent(event);
+    return;
+  }
 }
 
 module.exports = async (req, res) => {
