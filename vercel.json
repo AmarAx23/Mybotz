@@ -1,6 +1,6 @@
 {
   "crons": [
     { "path": "/api/cron/morning-reminder", "schedule": "0 0 * * *" },
-    { "path": "/api/cron/weekly-summary", "schedule": "0 1 * * 0" }
+    { "path": "/api/cron/streak-check", "schedule": "0 9 * * *" }
   ]
 }
