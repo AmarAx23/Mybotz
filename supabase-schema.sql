@@ -33,5 +33,26 @@ create table if not exists measurements (
   unique (user_id, log_date)
 );
 
+create table if not exists photos (
+  id bigserial primary key,
+  user_id text references users(user_id) on delete cascade,
+  log_date date not null,
+  storage_path text not null,
+  public_url text not null,
+  created_at timestamptz default now(),
+  unique (user_id, log_date)
+);
+
 create index if not exists logs_user_id_idx on logs(user_id);
 create index if not exists measurements_user_id_idx on measurements(user_id);
+create index if not exists photos_user_id_idx on photos(user_id);
+
+-- ที่เก็บรูปความคืบหน้า (Supabase Storage) — bucket แบบ public เพราะรูปเข้าถึงได้เฉพาะคนมีลิงก์ตรงเท่านั้น (เดา URL ไม่ได้)
+insert into storage.buckets (id, name, public)
+values ('progress-photos', 'progress-photos', true)
+on conflict (id) do nothing;
+
+drop policy if exists "Public read progress photos" on storage.objects;
+create policy "Public read progress photos"
+  on storage.objects for select
+  using (bucket_id = 'progress-photos');
