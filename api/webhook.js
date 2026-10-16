@@ -6,7 +6,7 @@ const {
 const { startPlan, buildTodayPlanMessage, buildCalorieMessage, onboardingHint } = require('../lib/healthplan');
 const { uploadProgressPhoto, getUserPhotos } = require('../lib/storage');
 const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
-const { logSteps, buildStepsStatusMessage, buildRewardsForUser } = require('../lib/steps');
+const { logSteps, buildStepsStatusMessage, buildRewardsForUser, buildWeeklyRewardsRecap } = require('../lib/steps');
 const { buildPointsText, buildBadgesText, DEFAULT_STEP_GOAL } = require('../lib/rewards');
 const {
   REWARD, getWallet, titleFor, buildRedeemPrompt, handleRedeemPostback, buildPendingListText, markFulfilled
@@ -414,6 +414,12 @@ async function handleTextEvent(event) {
         }
       } catch (err) {
         console.error('coach narrative error:', err);
+      }
+      try {
+        const recap = await buildWeeklyRewardsRecap(userId);
+        if (recap) coach.text += '\n\n' + recap;
+      } catch (err) {
+        console.error('weekly rewards recap error:', err);
       }
     }
     const out = [coach || { type: 'text', text: 'ยังไม่มีข้อมูลก้าว/อาหาร/น้ำหนักพอสำหรับสรุปสัปดาห์นี้ ลองบันทึกสักสองสามวันก่อนนะ' }];
