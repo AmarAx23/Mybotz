@@ -15,6 +15,8 @@ const { accessRequired, isApproved, tryApprove, NEED_CODE_TEXT } = require('../l
 const { setupRichMenu } = require('../lib/richmenu');
 const { buildExportCsv } = require('../lib/export');
 const { buildMonthlySummaryImage } = require('../lib/reports');
+const { consumeAiQuota, overQuotaText } = require('../lib/aiquota');
+const { isPausedOn } = require('../lib/pause');
 const { logMealAndReply, deleteLastMeal, buildMealsSummaryMessage } = require('../lib/meals');
 
 function readRawBody(req) {
@@ -38,7 +40,7 @@ function helpText() {
     '• "ลบล่าสุด" — ลบข้อมูลน้ำหนักของวันนี้ทิ้ง\n' +
     '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n\n' +
     'บันทึกอาหาร:\n' +
-    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้\n' +
+    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ (AI อ่านรูปได้วันละ 20 รูป)\n' +
     '• "กิน 450 โปรตีน 30" — บันทึกเอง\n' +
     '• "มื้อวันนี้" — ดูสรุปวันนี้เทียบเป้า\n' +
     '• "ลบมื้อล่าสุด" — ลบมื้อที่บันทึกผิด\n\n' +
@@ -52,6 +54,8 @@ function helpText() {
     '• "ปรับแคลอรี่ -150" — ปรับเป้าแคลอรี่เอง (พิมพ์ 0 เพื่อยกเลิก)\n' +
     '• "สรุปสัปดาห์" — โค้ชประจำสัปดาห์ (ก้าว/อาหาร/แนวโน้มน้ำหนัก)\n' +
     '• "เป้าแคลอรี่" — ดูเป้าแคลอรี่/โปรตีนต่อวัน\n\n' +
+    'พักผ่อน:\n' +
+    '• "พัก 3 วัน" — โหมดพัก (ป่วย/เดินทาง) ไม่เตือน streak ไม่ขาด  • "เลิกพัก"\n\n' +
     'แผนสุขภาพ 4 เดือน (ชาย = เวท/วิ่ง, หญิง = ชาเลนจ์เดิน):\n' +
     '• "เริ่มแผน" — เริ่มนับวันที่ 1 ของโปรแกรม\n' +
     '• "วันนี้" — ดูตารางของวันนี้\n\n' +
@@ -82,6 +86,18 @@ async function handleImageEvent(event) {
   }
 
   try {
+    // จำกัดจำนวนรูปที่ให้ AI อ่านต่อวัน (กันค่าใช้จ่ายบานปลาย)
+    let quota = { allowed: true, limit: 20 };
+    try {
+      quota = await consumeAiQuota(userId);
+    } catch (err) {
+      console.error('consumeAiQuota error:', err); // นับโควต้าพัง = ปล่อยผ่าน ไม่ให้บอทใช้ไม่ได้
+    }
+    if (!quota.allowed) {
+      await replyMessage(replyToken, [{ type: 'text', text: overQuotaText(quota.limit) }]);
+      return;
+    }
+
     const buffer = await getMessageContent(event.message.id);
 
     // ถ้าตั้ง ANTHROPIC_API_KEY ไว้ ให้ลองอ่านก่อนว่าเป็นรูปแคปหน้าจอแอปนับก้าวหรือไม่
@@ -159,6 +175,50 @@ async function handleTextEvent(event) {
       await replyMessage(replyToken, [{ type: 'text', text: 'รหัสไม่ถูกต้อง ลองใหม่อีกครั้งนะ' }]);
     } else {
       await replyMessage(replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
+    }
+    return;
+  }
+
+  // โหมดพัก: "พัก 3 วัน" / "เลิกพัก"
+  if (/^(เลิกพัก|ยกเลิกพัก|กลับมาแล้ว|resume)\s*$/i.test(text)) {
+    const user = await getUserData(userId);
+    if (!isPausedOn(user, todayStr())) {
+      await replyMessage(replyToken, [{ type: 'text', text: 'ตอนนี้ไม่ได้อยู่ในโหมดพักนะ' }]);
+      return;
+    }
+    try {
+      await setUserFields(userId, { pause_until: addDays(todayStr(), -1) });
+      await replyMessage(replyToken, [{ type: 'text', text: '👋 ยินดีต้อนรับกลับ! ปิดโหมดพักแล้ว บอทจะกลับมาเตือนตามปกติตั้งแต่พรุ่งนี้เช้า' }]);
+    } catch (err) {
+      console.error('resume error:', err);
+      await notifyAdmin('pause', 'ปิดโหมดพักไม่สำเร็จ (ลืมรัน supabase-v4.sql หรือเปล่า): ' + String(err.message || err).slice(0, 200));
+      await replyMessage(replyToken, [{ type: 'text', text: 'ปิดโหมดพักไม่สำเร็จ ลองใหม่อีกครั้งนะ' }]);
+    }
+    return;
+  }
+
+  const pauseMatch = text.match(/^(พัก|หยุดพัก|pause)\s*(\d{1,3})?\s*(วัน|days?)?\s*$/i);
+  if (pauseMatch) {
+    const today = todayStr();
+    const n = pauseMatch[2] ? parseInt(pauseMatch[2], 10) : null;
+    if (n === null) {
+      const user = await getUserData(userId);
+      const status = isPausedOn(user, today) ? `ตอนนี้อยู่ในโหมดพัก ถึงวันที่ ${user.pause_until}\n(พิมพ์ "เลิกพัก" เพื่อกลับมาเลย)\n\n` : '';
+      await replyMessage(replyToken, [{ type: 'text', text: status + 'ต้องไปธุระ ป่วย หรือเดินทาง? พิมพ์ เช่น "พัก 3 วัน" (1-30 วัน)\nระหว่างพัก บอทจะไม่ส่งเตือน streak/ชาเลนจ์ไม่ขาด และไม่เตือนเรื่องน้ำหนักขึ้นลง กลับมาบันทึกน้ำหนักเมื่อไหร่ก็ปิดโหมดพักเอง' }]);
+      return;
+    }
+    if (n < 1 || n > 30) {
+      await replyMessage(replyToken, [{ type: 'text', text: 'พักได้ 1-30 วันนะ เช่น "พัก 3 วัน"' }]);
+      return;
+    }
+    const until = addDays(today, n - 1);
+    try {
+      await setUserFields(userId, { pause_from: today, pause_until: until });
+      await replyMessage(replyToken, [{ type: 'text', text: `⏸ เปิดโหมดพัก ${n} วัน (ถึงวันที่ ${until})\nบอทจะไม่ส่งเตือน และ streak/ชาเลนจ์จะไม่ขาด\nกลับมาก่อนได้ แค่บันทึกน้ำหนัก หรือพิมพ์ "เลิกพัก" พักผ่อนให้เต็มที่นะ 🙏` }]);
+    } catch (err) {
+      console.error('pause error:', err);
+      await notifyAdmin('pause', 'เปิดโหมดพักไม่สำเร็จ (ลืมรัน supabase-v4.sql หรือเปล่า): ' + String(err.message || err).slice(0, 200));
+      await replyMessage(replyToken, [{ type: 'text', text: 'เปิดโหมดพักไม่สำเร็จ ลองใหม่อีกครั้งนะ' }]);
     }
     return;
   }
