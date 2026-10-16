@@ -21,6 +21,7 @@ const { buildMonthlySummaryImage } = require('../lib/reports');
 const { consumeAiQuota, overQuotaText } = require('../lib/aiquota');
 const { isPausedOn } = require('../lib/pause');
 const { logMealAndReply, deleteLastMeal, buildMealsSummaryMessage } = require('../lib/meals');
+const { buildPhotoMealConfirm, handleMealPostback } = require('../lib/mealconfirm');
 
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -44,7 +45,7 @@ function helpText() {
     '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n\n' +
     'พิมพ์ภาษาธรรมดาได้เลย (ใช้ AI): เช่น "เมื่อกี้กินข้าวมันไก่กับชานม" "เดินมา 8 พันกว่า" "สัปดาห์นี้กินโปรตีนพอไหม" "เย็นนี้กินอะไรดี"\n\n' +
     'บันทึกอาหาร:\n' +
-    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ (AI ใช้ได้รวมวันละ 20 ครั้ง ทั้งรูปและข้อความ)\n' +
+    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ กดบันทึกหรือแก้ไขก่อนได้ (AI ใช้ได้รวมวันละ 20 ครั้ง ทั้งรูปและข้อความ)\n' +
     '• ส่งรูปเมนูร้านอาหาร/ฉลากอาหาร บอทช่วยเลือกตามแคลอรี่ที่เหลือ\n' +
     '• "กิน 450 โปรตีน 30" — บันทึกเอง\n' +
     '• "มื้อวันนี้" — ดูสรุปวันนี้เทียบเป้า\n' +
@@ -120,7 +121,8 @@ async function handleImageEvent(event) {
 
     if (vision.configured && vision.type === 'food') {
       if (vision.food) {
-        await replyMessage(replyToken, [{ type: 'text', text: await logMealAndReply(userId, vision.food, 'photo') }]);
+        // ยังไม่บันทึก: ให้ผู้ใช้กด บันทึก / แก้ไข / ไม่บันทึก ก่อน (ดู lib/mealconfirm.js)
+        await replyMessage(replyToken, [buildPhotoMealConfirm(vision.food)]);
       } else {
         await replyMessage(replyToken, [{ type: 'text', text: 'เห็นว่าเป็นรูปอาหาร แต่ประเมินไม่ได้ ลองถ่ายให้เห็นอาหารชัดขึ้น หรือพิมพ์ เช่น "กิน 450 โปรตีน 30" แทนนะ' }]);
       }
@@ -608,9 +610,26 @@ async function handleFollowEvent(event) {
   await replyMessage(event.replyToken, [{ type: 'text', text }]);
 }
 
+// กดปุ่ม Quick Reply (postback) เช่น ยืนยันมื้ออาหารจากรูป
+async function handlePostbackEvent(event) {
+  const userId = event.source && event.source.userId;
+  if (!userId || !event.postback) return;
+  await ensureUser(userId);
+  if (!isApproved(await getUserData(userId), userId)) {
+    await replyMessage(event.replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
+    return;
+  }
+  const messages = await handleMealPostback(userId, event.postback.data);
+  if (messages) await replyMessage(event.replyToken, messages);
+}
+
 async function handleEvent(event) {
   if (event.type === 'follow') {
     await handleFollowEvent(event);
+    return;
+  }
+  if (event.type === 'postback') {
+    await handlePostbackEvent(event);
     return;
   }
   if (event.type !== 'message') return;
