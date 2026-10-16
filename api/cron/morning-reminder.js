@@ -1,4 +1,5 @@
-const { pushMessage } = require('../../lib/line');
+const { pushOrThrow, notifyAdmin } = require('../../lib/admin');
+const { isApproved } = require('../../lib/access');
 const { getAllUsers } = require('../../lib/users');
 const { buildTodayPlanMessage } = require('../../lib/healthplan');
 const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
@@ -33,8 +34,10 @@ module.exports = async (req, res) => {
   const today = todayStr();
   const reminderText = 'สวัสดีตอนเช้า ☀️ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ';
 
+  const failures = [];
   for (const user of users) {
     if (!user.user_id) continue;
+    if (!isApproved(user, user.user_id)) continue; // ยังไม่ได้รับอนุญาต (รหัสเชิญ)
     try {
       // ส่งเฉพาะคนที่เคยบันทึกน้ำหนัก (หรือเริ่มแผนแล้ว) กันสแปมคนที่เพิ่งแอดบอทแต่ยังไม่ได้เริ่มใช้
       const hasLogged = !!user.start_weight;
@@ -84,11 +87,16 @@ module.exports = async (req, res) => {
       }
 
       // LINE push message รองรับสูงสุด 5 ข้อความต่อครั้ง
-      await pushMessage(user.user_id, messages.slice(0, 5));
+      await pushOrThrow(user.user_id, messages.slice(0, 5));
     } catch (err) {
       console.error('morning-reminder error for', user.user_id, err);
+      failures.push(String(err && err.message ? err.message : err));
     }
   }
 
-  res.status(200).json({ status: 'ok', sent: users.length });
+  if (failures.length > 0) {
+    await notifyAdmin('cron-morning', `แจ้งเตือนเช้าส่งไม่สำเร็จ ${failures.length} คน (จากทั้งหมด ${users.length})\nตัวอย่าง: ${failures[0]}`);
+  }
+
+  res.status(200).json({ status: 'ok', sent: users.length - failures.length, failed: failures.length });
 };
