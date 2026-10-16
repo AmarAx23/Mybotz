@@ -36,14 +36,18 @@ module.exports = async (req, res) => {
   for (const user of users) {
     if (!user.user_id) continue;
     try {
+      // ส่งเฉพาะคนที่เคยบันทึกน้ำหนัก (หรือเริ่มแผนแล้ว) กันสแปมคนที่เพิ่งแอดบอทแต่ยังไม่ได้เริ่มใช้
+      const hasLogged = !!user.start_weight;
+      if (!hasLogged && !user.program_start_date) continue;
+
       const isFemale = user.gender === 'F';
       const messages = [];
 
       if (!isFemale) {
-        messages.push({ type: 'text', text: reminderText });
+        if (hasLogged) messages.push({ type: 'text', text: reminderText });
       } else if (isSunday(today)) {
         // ผู้ใช้หญิง: ชั่งน้ำหนักสัปดาห์ละครั้ง (วันอาทิตย์) ส่วนวันอื่นเตือนเฉพาะชาเลนจ์เดิน
-        messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ วันนี้วันอาทิตย์ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ' });
+        if (hasLogged) messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ วันนี้วันอาทิตย์ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ' });
       } else if (user.program_start_date) {
         messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ ชาเลนจ์เดินวันนี้มาแล้ว!' });
       }
