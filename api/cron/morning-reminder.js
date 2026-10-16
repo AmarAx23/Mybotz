@@ -1,7 +1,9 @@
 const { pushOrThrow, notifyAdmin } = require('../../lib/admin');
 const { isApproved } = require('../../lib/access');
 const { getAllUsers } = require('../../lib/users');
-const { buildTodayPlanMessage } = require('../../lib/healthplan');
+const {
+  buildTodayPlanMessage, programDayNumber, personalStepGoal, buildPlanCompleteMessage, PLAN_DAYS
+} = require('../../lib/healthplan');
 const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
@@ -54,17 +56,28 @@ module.exports = async (req, res) => {
       const messages = [];
       let weeklyChart = null;
 
+      // แผน 16 สัปดาห์: ระหว่างแผน = ส่งตารางวันนี้, วันที่ 113 = ฉลองจบแผนครั้งเดียว, หลังจากนั้น = ไม่ส่งตารางแล้ว
+      const planDay = programDayNumber(user, today);
+      const inPlan = planDay !== null && planDay >= 1 && planDay <= PLAN_DAYS;
+      const planJustDone = planDay === PLAN_DAYS + 1;
+      const planDone = planDay !== null && planDay > PLAN_DAYS + 1;
+
       if (!isFemale) {
         if (hasLogged) messages.push({ type: 'text', text: reminderText });
       } else if (isSunday(today)) {
         // ผู้ใช้หญิง: ชั่งน้ำหนักสัปดาห์ละครั้ง (วันอาทิตย์) ส่วนวันอื่นเตือนเฉพาะชาเลนจ์เดิน
         if (hasLogged) messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ วันนี้วันอาทิตย์ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ' });
-      } else if (user.program_start_date) {
+      } else if (inPlan) {
         messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ ชาเลนจ์เดินวันนี้มาแล้ว!' });
+      } else if (planDone) {
+        // จบชาเลนจ์แล้ว: เตือนเดินตามเป้าก้าวส่วนตัวแทน (ยังเก็บแต้ม/เหรียญต่อได้)
+        messages.push({ type: 'text', text: `สวัสดีตอนเช้า ☀️ วันนี้เดินให้ได้ ${personalStepGoal(user).toLocaleString('en-US')} ก้าวนะ เก็บแต้มต่อเลย 🪙` });
       }
 
-      if (user.program_start_date) {
+      if (inPlan) {
         messages.push(await buildTodayPlanMessage(user.user_id));
+      } else if (planJustDone) {
+        messages.push(buildPlanCompleteMessage(user));
       }
 
       if (isSunday(today)) {
