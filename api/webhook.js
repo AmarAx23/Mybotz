@@ -374,7 +374,15 @@ async function handleTextEvent(event) {
   }
 
   if (/^(กราฟ|graph|chart)/i.test(text)) {
-    const chartMsg = await buildGraphMessage(userId);
+    let chartMsg = null;
+    try {
+      chartMsg = await buildGraphMessage(userId);
+    } catch (err) {
+      console.error('graph error:', err);
+      await notifyAdmin('graph', 'สร้างกราฟน้ำหนักไม่สำเร็จ: ' + String(err.message || err).slice(0, 200));
+      await replyMessage(replyToken, [{ type: 'text', text: 'สร้างกราฟไม่สำเร็จ ลองใหม่อีกครั้งนะ' }]);
+      return;
+    }
     if (chartMsg) {
       await replyMessage(replyToken, [chartMsg]);
     } else {
