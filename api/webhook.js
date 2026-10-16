@@ -9,6 +9,9 @@ const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
 const { logSteps, buildStepsStatusMessage } = require('../lib/steps');
 const { readStepsFromImage } = require('../lib/stepsvision');
 const { buildWeeklyCoachMessage } = require('../lib/coach');
+const { isAdmin, notifyAdmin } = require('../lib/admin');
+const { accessRequired, isApproved, tryApprove, NEED_CODE_TEXT } = require('../lib/access');
+const { setupRichMenu } = require('../lib/richmenu');
 const { buildExportCsv } = require('../lib/export');
 const { buildMonthlySummaryImage } = require('../lib/reports');
 const { logMealAndReply, deleteLastMeal, buildMealsSummaryMessage } = require('../lib/meals');
@@ -71,6 +74,12 @@ async function handleImageEvent(event) {
 
   await ensureUser(userId);
 
+  // ผู้ใช้ที่ยังไม่ได้รับอนุญาต: ไม่อ่านรูป (กันค่า API และข้อมูลปนเปื้อน)
+  if (!isApproved(await getUserData(userId), userId)) {
+    await replyMessage(replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
+    return;
+  }
+
   try {
     const buffer = await getMessageContent(event.message.id);
 
@@ -80,6 +89,7 @@ async function handleImageEvent(event) {
       vision = await readStepsFromImage(buffer);
     } catch (err) {
       console.error('readStepsFromImage error:', err);
+      await notifyAdmin('vision', 'อ่านรูปด้วย Claude API ไม่สำเร็จ: ' + String(err.message || err).slice(0, 300));
       await replyMessage(replyToken, [{ type: 'text', text: 'อ่านรูปไม่สำเร็จ ลองส่งใหม่อีกครั้งนะ (ถ้าเป็นรูปนับก้าว พิมพ์ "เดิน 7500" แทนได้)' }]);
       return;
     }
@@ -118,6 +128,39 @@ async function handleTextEvent(event) {
   const replyToken = event.replyToken;
 
   await ensureUser(userId);
+
+  if (/^(ไอดีฉัน|my ?id)\s*$/i.test(text)) {
+    await replyMessage(replyToken, [{ type: 'text', text: `ไอดี LINE ของคุณสำหรับบอทนี้:\n${userId}\n(ใช้ตั้งเป็น ADMIN_USER_ID ใน Vercel ถ้าคุณเป็นเจ้าของบอท อย่าแชร์ให้คนอื่น)` }]);
+    return;
+  }
+
+  if (/^ตั้งเมนู\s*$/.test(text)) {
+    if (!isAdmin(userId)) {
+      await replyMessage(replyToken, [{ type: 'text', text: 'คำสั่งนี้ใช้ได้เฉพาะเจ้าของบอท (ต้องตั้ง ADMIN_USER_ID ใน Vercel ก่อน)' }]);
+      return;
+    }
+    try {
+      await setupRichMenu();
+      await replyMessage(replyToken, [{ type: 'text', text: '✅ ตั้งเมนูใต้แชทเรียบร้อย ปิดแชทแล้วเปิดใหม่ จะเห็นปุ่มเมนูด้านล่าง' }]);
+    } catch (err) {
+      console.error('setupRichMenu error:', err);
+      await replyMessage(replyToken, [{ type: 'text', text: 'ตั้งเมนูไม่สำเร็จ: ' + String(err.message || err).slice(0, 300) }]);
+    }
+    return;
+  }
+
+  // จำกัดคนใช้ด้วยรหัสเชิญ (ถ้าตั้ง INVITE_CODE ไว้)
+  if (accessRequired() && !isApproved(await getUserData(userId), userId)) {
+    const result = await tryApprove(userId, text);
+    if (result === 'ok') {
+      await replyMessage(replyToken, [{ type: 'text', text: 'ยินดีต้อนรับ! 🎉 รหัสถูกต้อง ใช้งานได้แล้วนะ\nเริ่มต้นพิมพ์ "เริ่มแผน" หรือพิมพ์ "ช่วยเหลือ" ดูคำสั่งทั้งหมดได้เลย' }]);
+    } else if (result === 'wrong') {
+      await replyMessage(replyToken, [{ type: 'text', text: 'รหัสไม่ถูกต้อง ลองใหม่อีกครั้งนะ' }]);
+    } else {
+      await replyMessage(replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
+    }
+    return;
+  }
 
   if (/^(มื้อวันนี้|แคลวันนี้|กินอะไรไป|meals)/i.test(text)) {
     await replyMessage(replyToken, [await buildMealsSummaryMessage(userId)]);
@@ -415,7 +458,22 @@ async function handleTextEvent(event) {
   await replyMessage(replyToken, [{ type: 'text', text: helpText() }]);
 }
 
+async function handleFollowEvent(event) {
+  const userId = event.source && event.source.userId;
+  if (!userId) return;
+  await ensureUser(userId);
+  const approved = isApproved(await getUserData(userId), userId);
+  const text = approved
+    ? 'สวัสดี! ยินดีที่ได้รู้จักนะ 👋\nบอทนี้ช่วยลดน้ำหนัก ติดตามก้าว และนับแคลอรี่\n\nเริ่มต้นง่ายๆ: พิมพ์ "เริ่มแผน" แล้วบอทจะถามข้อมูลทีละข้อ\nหรือส่งตัวเลขน้ำหนักมาบันทึกได้เลย เช่น "65.4"\nพิมพ์ "ช่วยเหลือ" ดูคำสั่งทั้งหมด'
+    : 'สวัสดี! ยินดีต้อนรับ 👋\n' + NEED_CODE_TEXT;
+  await replyMessage(event.replyToken, [{ type: 'text', text }]);
+}
+
 async function handleEvent(event) {
+  if (event.type === 'follow') {
+    await handleFollowEvent(event);
+    return;
+  }
   if (event.type !== 'message') return;
   if (event.message.type === 'text') {
     await handleTextEvent(event);
@@ -451,7 +509,10 @@ module.exports = async (req, res) => {
 
   const events = json.events || [];
   await Promise.all(
-    events.map((event) => handleEvent(event).catch((err) => console.error('handleEvent error:', err)))
+    events.map((event) => handleEvent(event).catch(async (err) => {
+      console.error('handleEvent error:', err);
+      await notifyAdmin('webhook', 'บอทเจอ error ระหว่างตอบข้อความ: ' + String(err && err.message ? err.message : err).slice(0, 300));
+    }))
   );
 
   res.status(200).json({ status: 'ok' });
