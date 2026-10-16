@@ -5,6 +5,7 @@ const { buildTodayPlanMessage } = require('../../lib/healthplan');
 const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
+const { buildWeeklyChartMessage } = require('../../lib/weeklychart');
 const { todayStr } = require('../../lib/calc');
 
 function isAuthorized(req) {
@@ -45,6 +46,7 @@ module.exports = async (req, res) => {
 
       const isFemale = user.gender === 'F';
       const messages = [];
+      let weeklyChart = null;
 
       if (!isFemale) {
         if (hasLogged) messages.push({ type: 'text', text: reminderText });
@@ -63,7 +65,12 @@ module.exports = async (req, res) => {
         // โค้ชประจำสัปดาห์ (ก้าว/อาหาร/ระดับกิจกรรม/แนวโน้มน้ำหนัก) ส่งวันอาทิตย์
         try {
           const coach = await buildWeeklyCoachMessage(user.user_id, { apply: true });
-          if (coach) messages.push(coach);
+          if (coach) {
+            messages.push(coach);
+            // กราฟก้าว/แคลอรี่ 7 วัน (ถ้าสร้างไม่ได้ก็ข้าม ไม่ให้กระทบข้อความอื่น)
+            try { weeklyChart = await buildWeeklyChartMessage(user.user_id); } catch (e) { console.error('weekly chart error for', user.user_id, e); }
+            if (weeklyChart) messages.push(weeklyChart);
+          }
         } catch (err) {
           // ถ้าสรุปประจำสัปดาห์พัง (เช่น ยังไม่ได้สร้างตารางใหม่ใน Supabase) ก็ยังต้องส่งข้อความเตือนตามปกติ
           console.error('weekly coach error for', user.user_id, err);
@@ -81,12 +88,15 @@ module.exports = async (req, res) => {
         if (isFirstOfMonth(today)) {
           const monthly = await buildMonthlySummaryMessage(user.user_id);
           if (monthly) messages.push(monthly);
-          const monthlyImage = await buildMonthlySummaryImage(user.user_id);
-          if (monthlyImage) messages.push(monthlyImage);
+          try {
+            const monthlyImage = await buildMonthlySummaryImage(user.user_id);
+            if (monthlyImage) messages.push(monthlyImage);
+          } catch (e) { console.error('monthly image error for', user.user_id, e); }
         }
       }
 
-      // LINE push message รองรับสูงสุด 5 ข้อความต่อครั้ง
+      // LINE push message รองรับสูงสุด 5 ข้อความต่อครั้ง ถ้าเกินให้ตัดกราฟรายสัปดาห์ออกก่อน
+      if (weeklyChart && messages.length > 5) messages.splice(messages.indexOf(weeklyChart), 1);
       await pushOrThrow(user.user_id, messages.slice(0, 5));
     } catch (err) {
       console.error('morning-reminder error for', user.user_id, err);
