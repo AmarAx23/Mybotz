@@ -2,7 +2,8 @@ const { pushMessage } = require('../../lib/line');
 const { getAllUsers } = require('../../lib/users');
 const { buildTodayPlanMessage } = require('../../lib/healthplan');
 const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
-const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
+const { buildMonthlySummaryMessage } = require('../../lib/reports');
+const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { todayStr } = require('../../lib/calc');
 
 function isAuthorized(req) {
@@ -35,11 +36,34 @@ module.exports = async (req, res) => {
   for (const user of users) {
     if (!user.user_id) continue;
     try {
-      const messages = [{ type: 'text', text: reminderText }];
+      const isFemale = user.gender === 'F';
+      const messages = [];
+
+      if (!isFemale) {
+        messages.push({ type: 'text', text: reminderText });
+      } else if (isSunday(today)) {
+        // ผู้ใช้หญิง: ชั่งน้ำหนักสัปดาห์ละครั้ง (วันอาทิตย์) ส่วนวันอื่นเตือนเฉพาะชาเลนจ์เดิน
+        messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ วันนี้วันอาทิตย์ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ' });
+      } else if (user.program_start_date) {
+        messages.push({ type: 'text', text: 'สวัสดีตอนเช้า ☀️ ชาเลนจ์เดินวันนี้มาแล้ว!' });
+      }
 
       if (user.program_start_date) {
         messages.push(await buildTodayPlanMessage(user.user_id));
       }
+
+      if (isSunday(today)) {
+        // โค้ชประจำสัปดาห์ (ก้าว/อาหาร/ระดับกิจกรรม/แนวโน้มน้ำหนัก) ส่งวันอาทิตย์
+        try {
+          const coach = await buildWeeklyCoachMessage(user.user_id, { apply: true });
+          if (coach) messages.push(coach);
+        } catch (err) {
+          // ถ้าสรุปประจำสัปดาห์พัง (เช่น ยังไม่ได้สร้างตารางใหม่ใน Supabase) ก็ยังต้องส่งข้อความเตือนตามปกติ
+          console.error('weekly coach error for', user.user_id, err);
+        }
+      }
+
+      if (messages.length === 0) continue;
 
       const logs = await getUserLogs(user.user_id, 1);
       if (logs.length > 0) {
@@ -50,8 +74,6 @@ module.exports = async (req, res) => {
         if (isFirstOfMonth(today)) {
           const monthly = await buildMonthlySummaryMessage(user.user_id);
           if (monthly) messages.push(monthly);
-          const monthlyImage = await buildMonthlySummaryImage(user.user_id);
-          if (monthlyImage) messages.push(monthlyImage);
         }
       }
 
