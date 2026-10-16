@@ -59,3 +59,15 @@ create policy "Public read progress photos"
 
 -- ระบบแต้ม/เหรียญตราจากการเดิน: เป้าก้าวส่วนตัว (คำสั่ง "เป้าก้าว 8000") ไม่มีค่า = 6,000 ก้าว
 alter table users add column if not exists step_goal integer;
+
+-- แลกแต้มเป็นรางวัล (เจ้าของบอทเลี้ยง) status: pending = ยังไม่ได้เลี้ยง, done = เลี้ยงแล้ว
+create table if not exists reward_redemptions (
+  id bigserial primary key,
+  user_id text references users(user_id) on delete cascade,
+  reward text not null,
+  points integer not null,
+  status text not null default 'pending',
+  created_at timestamptz default now(),
+  fulfilled_at timestamptz
+);
+create index if not exists reward_redemptions_user_id_idx on reward_redemptions(user_id);

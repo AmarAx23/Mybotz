@@ -8,6 +8,9 @@ const { uploadProgressPhoto, getUserPhotos } = require('../lib/storage');
 const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
 const { logSteps, buildStepsStatusMessage, buildRewardsForUser } = require('../lib/steps');
 const { buildPointsText, buildBadgesText, DEFAULT_STEP_GOAL } = require('../lib/rewards');
+const {
+  REWARD, getWallet, titleFor, buildRedeemPrompt, handleRedeemPostback, buildPendingListText, markFulfilled
+} = require('../lib/redeem');
 const { readStepsFromImage } = require('../lib/stepsvision');
 const { buildRemainingContext } = require('../lib/aicontext');
 const { interpretFreeText } = require('../lib/aichat');
@@ -45,6 +48,7 @@ function helpText() {
     '• "ลบล่าสุด" — ลบข้อมูลน้ำหนักของวันนี้ทิ้ง\n' +
     '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n' +
     '• "แต้ม" — ดูแต้มสะสมและระดับ  • "เหรียญ" — ดูเหรียญตรา\n' +
+    '• "แลกรางวัล" — ทุก 400 แต้ม แลก Sushiro ฟรี 1 มื้อ 🍣\n' +
     '• "เป้าก้าว 8000" — ตั้งเป้าก้าวเอง (ค่าเริ่มต้น 6,000)\n\n' +
     'พิมพ์ภาษาธรรมดาได้เลย (ใช้ AI): เช่น "เมื่อกี้กินข้าวมันไก่กับชานม" "เดินมา 8 พันกว่า" "สัปดาห์นี้กินโปรตีนพอไหม" "เย็นนี้กินอะไรดี"\n\n' +
     'บันทึกอาหาร:\n' +
@@ -294,11 +298,31 @@ async function handleTextEvent(event) {
 
   // แต้มและเหรียญตราจากการเดิน (lib/rewards.js)
   if (/^(แต้ม|คะแนน|points?)\s*$/i.test(text)) {
-    await replyMessage(replyToken, [{ type: 'text', text: buildPointsText(await buildRewardsForUser(userId), todayStr()) }]);
+    const r = await buildRewardsForUser(userId);
+    const wallet = await getWallet(userId, r.points);
+    await replyMessage(replyToken, [{ type: 'text', text: buildPointsText(r, todayStr(), wallet, wallet ? titleFor(wallet.count) : '', REWARD) }]);
     return;
   }
   if (/^(เหรียญ|เหรียญตรา|badges?)\s*$/i.test(text)) {
-    await replyMessage(replyToken, [{ type: 'text', text: buildBadgesText(await buildRewardsForUser(userId)) }]);
+    const r = await buildRewardsForUser(userId);
+    const wallet = await getWallet(userId, r.points);
+    await replyMessage(replyToken, [{ type: 'text', text: buildBadgesText(r, wallet ? titleFor(wallet.count) : '') }]);
+    return;
+  }
+  if (/^(แลกรางวัล|แลกแต้ม|แลกของ|รางวัล)\s*$/.test(text)) {
+    const r = await buildRewardsForUser(userId);
+    await replyMessage(replyToken, [buildRedeemPrompt(await getWallet(userId, r.points))]);
+    return;
+  }
+
+  // เจ้าของบอท: ดูรางวัลค้างเลี้ยง / ทำเครื่องหมายว่าเลี้ยงแล้ว
+  if (/^รายการแลก\s*$/.test(text) && isAdmin(userId)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await buildPendingListText() }]);
+    return;
+  }
+  const doneMatch = text.match(/^ส่งแล้ว\s*#?(\d+)\s*$/);
+  if (doneMatch && isAdmin(userId)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await markFulfilled(parseInt(doneMatch[1], 10)) }]);
     return;
   }
 
@@ -660,7 +684,8 @@ async function handlePostbackEvent(event) {
     await replyMessage(event.replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
     return;
   }
-  const messages = await handleMealPostback(userId, event.postback.data);
+  const messages = (await handleMealPostback(userId, event.postback.data)) ||
+    (await handleRedeemPostback(userId, event.postback.data, async () => (await buildRewardsForUser(userId)).points));
   if (messages) await replyMessage(event.replyToken, messages);
 }
 
