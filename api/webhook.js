@@ -6,7 +6,11 @@ const {
 const { startPlan, buildTodayPlanMessage, buildCalorieMessage, onboardingHint } = require('../lib/healthplan');
 const { uploadProgressPhoto, getUserPhotos } = require('../lib/storage');
 const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
-const { logSteps, buildStepsStatusMessage } = require('../lib/steps');
+const { logSteps, buildStepsStatusMessage, buildRewardsForUser } = require('../lib/steps');
+const { buildPointsText, buildBadgesText, DEFAULT_STEP_GOAL } = require('../lib/rewards');
+const {
+  REWARD, getWallet, titleFor, buildRedeemPrompt, handleRedeemPostback, buildPendingListText, markFulfilled
+} = require('../lib/redeem');
 const { readStepsFromImage } = require('../lib/stepsvision');
 const { buildRemainingContext } = require('../lib/aicontext');
 const { interpretFreeText } = require('../lib/aichat');
@@ -42,7 +46,10 @@ function helpText() {
     '• "ภายใน 12 สัปดาห์" — ตั้ง/เปลี่ยนกำหนดเวลา  • "ยกเลิกกำหนดเวลา"\n' +
     '• "รอบเอว 75" — บันทึกรอบเอว\n' +
     '• "ลบล่าสุด" — ลบข้อมูลน้ำหนักของวันนี้ทิ้ง\n' +
-    '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n\n' +
+    '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n' +
+    '• "แต้ม" — ดูแต้มสะสมและระดับ  • "เหรียญ" — ดูเหรียญตรา\n' +
+    '• "แลกรางวัล" — ทุก 400 แต้ม แลก Sushiro ฟรี 1 มื้อ 🍣\n' +
+    '• "เป้าก้าว 8000" — ตั้งเป้าก้าวเอง (ค่าเริ่มต้น 6,000)\n\n' +
     'พิมพ์ภาษาธรรมดาได้เลย (ใช้ AI): เช่น "เมื่อกี้กินข้าวมันไก่กับชานม" "เดินมา 8 พันกว่า" "สัปดาห์นี้กินโปรตีนพอไหม" "เย็นนี้กินอะไรดี"\n\n' +
     'บันทึกอาหาร:\n' +
     '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ กดบันทึกหรือแก้ไขก่อนได้ (AI ใช้ได้รวมวันละ 20 ครั้ง ทั้งรูปและข้อความ)\n' +
@@ -286,6 +293,64 @@ async function handleTextEvent(event) {
       { type: 'text', text: `ตั้งกำหนดถึงเป้าหมายไว้ ภายใน ${dl} วัน (${date}) แล้วนะ ⏳` },
       await buildCalorieMessage(userId)
     ]);
+    return;
+  }
+
+  // แต้มและเหรียญตราจากการเดิน (lib/rewards.js)
+  if (/^(แต้ม|คะแนน|points?)\s*$/i.test(text)) {
+    const r = await buildRewardsForUser(userId);
+    const wallet = await getWallet(userId, r.points);
+    await replyMessage(replyToken, [{ type: 'text', text: buildPointsText(r, todayStr(), wallet, wallet ? titleFor(wallet.count) : '', REWARD) }]);
+    return;
+  }
+  if (/^(เหรียญ|เหรียญตรา|badges?)\s*$/i.test(text)) {
+    const r = await buildRewardsForUser(userId);
+    const wallet = await getWallet(userId, r.points);
+    await replyMessage(replyToken, [{ type: 'text', text: buildBadgesText(r, wallet ? titleFor(wallet.count) : '') }]);
+    return;
+  }
+  if (/^(แลกรางวัล|แลกแต้ม|แลกของ|รางวัล)\s*$/.test(text)) {
+    const r = await buildRewardsForUser(userId);
+    await replyMessage(replyToken, [buildRedeemPrompt(await getWallet(userId, r.points))]);
+    return;
+  }
+
+  // เจ้าของบอท: ดูรางวัลค้างเลี้ยง / ทำเครื่องหมายว่าเลี้ยงแล้ว
+  if (/^รายการแลก\s*$/.test(text) && isAdmin(userId)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await buildPendingListText() }]);
+    return;
+  }
+  const doneMatch = text.match(/^ส่งแล้ว\s*#?(\d+)\s*$/);
+  if (doneMatch && isAdmin(userId)) {
+    await replyMessage(replyToken, [{ type: 'text', text: await markFulfilled(parseInt(doneMatch[1], 10)) }]);
+    return;
+  }
+
+  // เป้าก้าวส่วนตัว (ใช้เมื่อไม่ได้อยู่ในชาเลนจ์เดิน 16 สัปดาห์)
+  const stepGoalMatch = text.match(/^เป้าก้าว\s*(\d[\d,]*)?\s*$/);
+  if (stepGoalMatch) {
+    const user = await getUserData(userId);
+    const inChallenge = user && user.gender === 'F' && user.program_start_date;
+    const note = inChallenge ? '\n(ตอนอยู่ในชาเลนจ์เดิน 16 สัปดาห์ บอทใช้เป้าของชาเลนจ์ก่อน เป้านี้จะใช้หลังจบชาเลนจ์)' : '';
+    if (!stepGoalMatch[1]) {
+      const cur = Number(user && user.step_goal) || DEFAULT_STEP_GOAL;
+      await replyMessage(replyToken, [{ type: 'text', text: `🎯 เป้าก้าวส่วนตัว: ${cur.toLocaleString('en-US')} ก้าว/วัน\nเปลี่ยนได้ เช่น "เป้าก้าว 8000"` + note }]);
+      return;
+    }
+    const n = parseInt(stepGoalMatch[1].replace(/,/g, ''), 10);
+    if (n < 1000 || n > 30000) {
+      await replyMessage(replyToken, [{ type: 'text', text: 'ตั้งเป้าก้าวได้ระหว่าง 1,000-30,000 ก้าว เช่น "เป้าก้าว 8000"' }]);
+      return;
+    }
+    try {
+      await setUserFields(userId, { step_goal: n });
+    } catch (err) {
+      console.error('set step_goal error:', err);
+      await notifyAdmin('step-goal', 'ตั้งเป้าก้าวไม่ได้ (ยังไม่ได้เพิ่มคอลัมน์ step_goal ใน Supabase?): ' + String(err.message || err).slice(0, 200));
+      await replyMessage(replyToken, [{ type: 'text', text: 'ตอนนี้ยังตั้งเป้าก้าวเองไม่ได้ ระบบกำลังปรับปรุง ใช้เป้าเริ่มต้น 6,000 ก้าวไปก่อนนะ' }]);
+      return;
+    }
+    await replyMessage(replyToken, [{ type: 'text', text: `🎯 ตั้งเป้าก้าวส่วนตัวเป็น ${n.toLocaleString('en-US')} ก้าว/วันแล้ว` + note }]);
     return;
   }
 
@@ -619,7 +684,8 @@ async function handlePostbackEvent(event) {
     await replyMessage(event.replyToken, [{ type: 'text', text: NEED_CODE_TEXT }]);
     return;
   }
-  const messages = await handleMealPostback(userId, event.postback.data);
+  const messages = (await handleMealPostback(userId, event.postback.data)) ||
+    (await handleRedeemPostback(userId, event.postback.data, async () => (await buildRewardsForUser(userId)).points));
   if (messages) await replyMessage(event.replyToken, messages);
 }
 
