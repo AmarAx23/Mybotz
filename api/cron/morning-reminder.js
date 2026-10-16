@@ -6,6 +6,7 @@ const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { buildWeeklyChartMessage } = require('../../lib/weeklychart');
+const { buildWeeklyRewardsRecap } = require('../../lib/steps');
 const { buildCoachNarrative } = require('../../lib/aicoach');
 const { aiConfigured } = require('../../lib/ai');
 const { todayStr, addDays } = require('../../lib/calc');
@@ -78,6 +79,11 @@ module.exports = async (req, res) => {
                 if (note) coach.text += '\n\n💬 ' + note;
               } catch (e) { console.error('coach narrative error for', user.user_id, e); }
             }
+            // สรุปแต้ม/เหรียญประจำสัปดาห์ ต่อท้ายข้อความโค้ช (ไม่เพิ่มจำนวนข้อความ LINE จำกัด 5 ข้อความ/ครั้ง)
+            try {
+              const recap = await buildWeeklyRewardsRecap(user.user_id);
+              if (recap) coach.text += '\n\n' + recap;
+            } catch (e) { console.error('weekly rewards recap error for', user.user_id, e); }
             messages.push(coach);
             // กราฟก้าว/แคลอรี่ 7 วัน (ถ้าสร้างไม่ได้ก็ข้าม ไม่ให้กระทบข้อความอื่น)
             try { weeklyChart = await buildWeeklyChartMessage(user.user_id); } catch (e) { console.error('weekly chart error for', user.user_id, e); }
