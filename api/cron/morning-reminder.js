@@ -6,7 +6,8 @@ const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { buildWeeklyChartMessage } = require('../../lib/weeklychart');
-const { todayStr } = require('../../lib/calc');
+const { todayStr, addDays } = require('../../lib/calc');
+const { isPausedOn } = require('../../lib/pause');
 
 function isAuthorized(req) {
   const secret = process.env.CRON_SECRET;
@@ -39,6 +40,7 @@ module.exports = async (req, res) => {
   for (const user of users) {
     if (!user.user_id) continue;
     if (!isApproved(user, user.user_id)) continue; // ยังไม่ได้รับอนุญาต (รหัสเชิญ)
+    if (isPausedOn(user, today)) continue; // โหมดพัก
     try {
       // ส่งเฉพาะคนที่เคยบันทึกน้ำหนัก (หรือเริ่มแผนแล้ว) กันสแปมคนที่เพิ่งแอดบอทแต่ยังไม่ได้เริ่มใช้
       const hasLogged = !!user.start_weight;
@@ -78,6 +80,11 @@ module.exports = async (req, res) => {
       }
 
       if (messages.length === 0) continue;
+
+      // เพิ่งพักจบเมื่อวาน: ทักต้อนรับกลับ (แทรกในข้อความแรก ไม่เพิ่มจำนวนข้อความ)
+      if (user.pause_until === addDays(today, -1) && messages[0].type === 'text') {
+        messages[0] = { type: 'text', text: '👋 ครบช่วงพักแล้ว ยินดีต้อนรับกลับ! ค่อยๆ กลับมาทีละนิดก็พอ ไม่ต้องรีบชดเชย\n\n' + messages[0].text };
+      }
 
       const logs = await getUserLogs(user.user_id, 1);
       if (logs.length > 0) {

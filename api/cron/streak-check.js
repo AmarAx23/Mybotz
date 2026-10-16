@@ -2,6 +2,7 @@ const { pushOrThrow, notifyAdmin } = require('../../lib/admin');
 const { isApproved } = require('../../lib/access');
 const { getAllUsers } = require('../../lib/users');
 const { todayStr } = require('../../lib/calc');
+const { isPausedOn } = require('../../lib/pause');
 
 function isSunday(dateStr) {
   return new Date(dateStr + 'T00:00:00Z').getUTCDay() === 0;
@@ -30,6 +31,7 @@ module.exports = async (req, res) => {
     if (!user.user_id) continue;
     if (!isApproved(user, user.user_id)) continue;
     if (!user.start_weight) continue; // ยังไม่เคยบันทึกน้ำหนักเลยสักครั้ง ข้ามไป (กันสแปมคนที่เพิ่งแอดบอท)
+    if (isPausedOn(user, today)) continue; // โหมดพัก
     if (user.last_log_date === today) continue; // บันทึกวันนี้ไปแล้ว ไม่ต้องเตือนซ้ำ
     const isFemale = user.gender === 'F';
     if (isFemale && !isSunday(today)) continue; // ผู้ใช้หญิงชั่งน้ำหนักวันอาทิตย์วันเดียว
