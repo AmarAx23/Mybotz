@@ -8,6 +8,9 @@ const { uploadProgressPhoto, getUserPhotos } = require('../lib/storage');
 const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
 const { logSteps, buildStepsStatusMessage } = require('../lib/steps');
 const { readStepsFromImage } = require('../lib/stepsvision');
+const { buildRemainingContext } = require('../lib/aicontext');
+const { interpretFreeText } = require('../lib/aichat');
+const { buildCoachNarrative } = require('../lib/aicoach');
 const { buildWeeklyCoachMessage } = require('../lib/coach');
 const { buildWeeklyChartMessage } = require('../lib/weeklychart');
 const { isAdmin, notifyAdmin } = require('../lib/admin');
@@ -39,8 +42,10 @@ function helpText() {
     '• "รอบเอว 75" — บันทึกรอบเอว\n' +
     '• "ลบล่าสุด" — ลบข้อมูลน้ำหนักของวันนี้ทิ้ง\n' +
     '• "เดิน 7500" — บันทึกก้าววันนี้ (หรือส่งรูปแคปหน้าจอแอปนับก้าวมาก็ได้)\n\n' +
+    'พิมพ์ภาษาธรรมดาได้เลย (ใช้ AI): เช่น "เมื่อกี้กินข้าวมันไก่กับชานม" "เดินมา 8 พันกว่า" "สัปดาห์นี้กินโปรตีนพอไหม" "เย็นนี้กินอะไรดี"\n\n' +
     'บันทึกอาหาร:\n' +
-    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ (AI อ่านรูปได้วันละ 20 รูป)\n' +
+    '• ส่งรูปอาหารมา บอทจะประเมินแคลอรี่/โปรตีนให้ (AI ใช้ได้รวมวันละ 20 ครั้ง ทั้งรูปและข้อความ)\n' +
+    '• ส่งรูปเมนูร้านอาหาร/ฉลากอาหาร บอทช่วยเลือกตามแคลอรี่ที่เหลือ\n' +
     '• "กิน 450 โปรตีน 30" — บันทึกเอง\n' +
     '• "มื้อวันนี้" — ดูสรุปวันนี้เทียบเป้า\n' +
     '• "ลบมื้อล่าสุด" — ลบมื้อที่บันทึกผิด\n\n' +
@@ -103,7 +108,9 @@ async function handleImageEvent(event) {
     // ถ้าตั้ง ANTHROPIC_API_KEY ไว้ ให้ลองอ่านก่อนว่าเป็นรูปแคปหน้าจอแอปนับก้าวหรือไม่
     let vision = null;
     try {
-      vision = await readStepsFromImage(buffer);
+      let ctx = '';
+      try { ctx = await buildRemainingContext(userId); } catch (e) { console.error('remaining context error:', e); }
+      vision = await readStepsFromImage(buffer, ctx);
     } catch (err) {
       console.error('readStepsFromImage error:', err);
       await notifyAdmin('vision', 'อ่านรูปด้วย Claude API ไม่สำเร็จ: ' + String(err.message || err).slice(0, 300));
@@ -116,6 +123,15 @@ async function handleImageEvent(event) {
         await replyMessage(replyToken, [{ type: 'text', text: await logMealAndReply(userId, vision.food, 'photo') }]);
       } else {
         await replyMessage(replyToken, [{ type: 'text', text: 'เห็นว่าเป็นรูปอาหาร แต่ประเมินไม่ได้ ลองถ่ายให้เห็นอาหารชัดขึ้น หรือพิมพ์ เช่น "กิน 450 โปรตีน 30" แทนนะ' }]);
+      }
+      return;
+    }
+
+    if (vision.configured && vision.type === 'menu') {
+      if (vision.menu) {
+        await replyMessage(replyToken, [{ type: 'text', text: '🍴 ช่วยเลือกให้ตามเป้าวันนี้\n\n' + vision.menu + '\n\n(ไม่ได้บันทึกเป็นมื้ออาหาร พอกินแล้วพิมพ์ เช่น "กิน 450 โปรตีน 30" หรือส่งรูปจานจริงมาบันทึกได้)' }]);
+      } else {
+        await replyMessage(replyToken, [{ type: 'text', text: 'เห็นว่าเป็นเมนูหรือฉลากอาหาร แต่อ่านไม่ชัด ลองถ่ายใหม่ให้เห็นตัวหนังสือชัดขึ้นนะ' }]);
       }
       return;
     }
@@ -223,7 +239,7 @@ async function handleTextEvent(event) {
     return;
   }
 
-  if (/^(มื้อวันนี้|แคลวันนี้|กินอะไรไป|meals)/i.test(text)) {
+  if (/^(มื้อวันนี้|แคลวันนี้|กินอะไรไป|meals)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildMealsSummaryMessage(userId)]);
     return;
   }
@@ -322,6 +338,17 @@ async function handleTextEvent(event) {
 
   if (/^(สรุปสัปดาห์|weekly)/i.test(text)) {
     const coach = await buildWeeklyCoachMessage(userId, { apply: false });
+    if (coach) {
+      try {
+        const q = await consumeAiQuota(userId);
+        if (q.allowed) {
+          const note = await buildCoachNarrative(userId, coach.text);
+          if (note) coach.text += '\n\n💬 ' + note;
+        }
+      } catch (err) {
+        console.error('coach narrative error:', err);
+      }
+    }
     const out = [coach || { type: 'text', text: 'ยังไม่มีข้อมูลก้าว/อาหาร/น้ำหนักพอสำหรับสรุปสัปดาห์นี้ ลองบันทึกสักสองสามวันก่อนนะ' }];
     try {
       const chart = await buildWeeklyChartMessage(userId);
@@ -368,12 +395,12 @@ async function handleTextEvent(event) {
     return;
   }
 
-  if (/^(สรุป|summary)/i.test(text)) {
+  if (/^(สรุป|summary)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildSummaryMessage(userId)]);
     return;
   }
 
-  if (/^(กราฟ|graph|chart)/i.test(text)) {
+  if (/^(กราฟ|graph|chart)\s*$/i.test(text)) {
     let chartMsg = null;
     try {
       chartMsg = await buildGraphMessage(userId);
@@ -484,12 +511,12 @@ async function handleTextEvent(event) {
     return;
   }
 
-  if (/^(เป้าแคลอรี่|เป้าอาหาร|kcal)/i.test(text)) {
+  if (/^(เป้าแคลอรี่|เป้าอาหาร|kcal)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildCalorieMessage(userId)]);
     return;
   }
 
-  if (/^(ทีดีอี|tdee|แคลอรี่|calorie)/i.test(text)) {
+  if (/^(ทีดีอี|tdee|แคลอรี่|calorie)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildTdeeMessage(userId)]);
     return;
   }
@@ -512,13 +539,49 @@ async function handleTextEvent(event) {
     return;
   }
 
-  if (/^(วันนี้|แผนวันนี้|today)/i.test(text)) {
+  if (/^(วันนี้|แผนวันนี้|today)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildTodayPlanMessage(userId)]);
     return;
   }
 
-  if (/^(ช่วยเหลือ|help|เมนู|menu)/i.test(text)) {
+  if (/^(ช่วยเหลือ|help|เมนู|menu)\s*$/i.test(text)) {
     await replyMessage(replyToken, [{ type: 'text', text: helpText() }]);
+    return;
+  }
+
+  // พิมพ์ตัวเลขน้ำหนักล้วนๆ (เช่น "65.4" หรือ "65.4 กก.") บันทึกทันที ไม่ต้องใช้ AI
+  const pureWeight = text.match(/^(\d{2,3}(?:\.\d{1,2})?)\s*(?:กก\.?|kg|กิโล(?:กรัม)?)?$/i);
+  if (pureWeight) {
+    const weight = parseFloat(pureWeight[1]);
+    if (weight >= 20 && weight <= 300) {
+      await replyMessage(replyToken, [{ type: 'text', text: await withHint(userId, await logWeight(userId, weight)) }]);
+      return;
+    }
+  }
+
+  // ข้อความภาษาธรรมดา: ให้ AI แยกว่าเป็นบันทึกมื้อ/ก้าว/น้ำหนัก หรือคำถาม (ปิดอยู่ถ้าไม่ได้ตั้ง ANTHROPIC_API_KEY หรือ AI ขัดข้อง จะใช้พฤติกรรมเดิม)
+  let ai = null;
+  try {
+    ai = await interpretFreeText(userId, text);
+  } catch (err) {
+    console.error('interpretFreeText error:', err);
+    await notifyAdmin('ai-chat', 'แชท AI ขัดข้อง: ' + String(err.message || err).slice(0, 300));
+    // AI ขัดข้อง: ไม่เดาน้ำหนักจากตัวเลขในประโยค (เช่น "กิน 150 กรัม" ต้องไม่กลายเป็นน้ำหนัก 150 กก.)
+    await replyMessage(replyToken, [{ type: 'text', text: 'ตอนนี้ AI ตอบไม่ได้ชั่วคราว ลองใหม่อีกครั้ง หรือใช้คำสั่งปกติ เช่น "กิน 450 โปรตีน 30", "เดิน 7500", "65.4" นะ' }]);
+    return;
+  }
+  if (ai) {
+    if (ai.kind === 'over') {
+      await replyMessage(replyToken, [{ type: 'text', text: overQuotaText(ai.limit) }]);
+    } else if (ai.kind === 'meal') {
+      await replyMessage(replyToken, [{ type: 'text', text: await logMealAndReply(userId, ai.food, 'photo').then((t) => t.replace('ประเมินจากรูป', 'ประเมินจากที่พิมพ์')) }]);
+    } else if (ai.kind === 'steps') {
+      await replyMessage(replyToken, [{ type: 'text', text: await logSteps(userId, ai.steps) }]);
+    } else if (ai.kind === 'weight') {
+      await replyMessage(replyToken, [{ type: 'text', text: await withHint(userId, await logWeight(userId, ai.weight)) }]);
+    } else {
+      await replyMessage(replyToken, [{ type: 'text', text: ai.text }]);
+    }
     return;
   }
 
