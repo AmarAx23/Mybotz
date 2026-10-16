@@ -9,6 +9,8 @@ const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
 const { logSteps, buildStepsStatusMessage } = require('../lib/steps');
 const { readStepsFromImage } = require('../lib/stepsvision');
 const { buildWeeklyCoachMessage } = require('../lib/coach');
+const { buildExportCsv } = require('../lib/export');
+const { buildMonthlySummaryImage } = require('../lib/reports');
 const { logMealAndReply, deleteLastMeal, buildMealsSummaryMessage } = require('../lib/meals');
 
 function readRawBody(req) {
@@ -51,7 +53,10 @@ function helpText() {
     '• "วันนี้" — ดูตารางของวันนี้\n\n' +
     'รูปความคืบหน้า:\n' +
     '• ส่งรูปตัวเองมาได้เลย จะเก็บไว้ 1 รูป/วัน\n' +
-    '• "เปรียบเทียบรูป" — ดูรูปแรกกับล่าสุด';
+    '• "เปรียบเทียบรูป" — ดูรูปแรกกับล่าสุด\n\n' +
+    'สรุป/ข้อมูล:\n' +
+    '• "สรุปเดือน" — ดูรูปสรุปความคืบหน้าเดือนที่แล้ว\n' +
+    '• "export" — ขอไฟล์ CSV ข้อมูลน้ำหนัก/รอบเอวทั้งหมด';
 }
 
 // ต่อท้ายข้อความด้วยคำถามข้อถัดไปของการตั้งค่าก่อนเริ่มแผน (ถ้ามี)
@@ -175,6 +180,39 @@ async function handleTextEvent(event) {
 
   if (/^(เดิน|ก้าว|steps?)\s*$/i.test(text)) {
     await replyMessage(replyToken, [await buildStepsStatusMessage(userId)]);
+    return;
+  }
+
+  if (/^(สรุปเดือน|monthly summary|monthly)/i.test(text)) {
+    try {
+      const image = await buildMonthlySummaryImage(userId);
+      if (!image) {
+        await replyMessage(replyToken, [{ type: 'text', text: 'เดือนที่แล้วยังไม่มีข้อมูลบันทึกเลยนะ' }]);
+      } else {
+        await replyMessage(replyToken, [image]);
+      }
+    } catch (err) {
+      console.error('monthly summary image error:', err);
+      await replyMessage(replyToken, [{ type: 'text', text: 'สร้างรูปสรุปเดือนไม่สำเร็จ ลองใหม่อีกครั้งนะ' }]);
+    }
+    return;
+  }
+
+  if (/^(export|ส่งออก|ดาวน์โหลดข้อมูล|ออกซีเอสวี)/i.test(text)) {
+    try {
+      const result = await buildExportCsv(userId);
+      if (!result) {
+        await replyMessage(replyToken, [{ type: 'text', text: 'ยังไม่มีข้อมูลให้ export เลยนะ ลองบันทึกน้ำหนักก่อน' }]);
+      } else {
+        await replyMessage(replyToken, [{
+          type: 'text',
+          text: `📄 ไฟล์ข้อมูลของคุณ (${result.rowCount} วัน) พร้อมแล้ว\n${result.url}\n\nลิงก์นี้เดายาก แต่เข้าถึงได้โดยไม่ต้อง login ถ้าไม่อยากให้คนอื่นเห็น อย่าแชร์ลิงก์นี้นะ`
+        }]);
+      }
+    } catch (err) {
+      console.error('export csv error:', err);
+      await replyMessage(replyToken, [{ type: 'text', text: 'สร้างไฟล์ export ไม่สำเร็จ ลองใหม่อีกครั้งนะ' }]);
+    }
     return;
   }
 
