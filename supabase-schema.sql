@@ -56,3 +56,6 @@ drop policy if exists "Public read progress photos" on storage.objects;
 create policy "Public read progress photos"
   on storage.objects for select
   using (bucket_id = 'progress-photos');
+
+-- ระบบแต้ม/เหรียญตราจากการเดิน: เป้าก้าวส่วนตัว (คำสั่ง "เป้าก้าว 8000") ไม่มีค่า = 6,000 ก้าว
+alter table users add column if not exists step_goal integer;
