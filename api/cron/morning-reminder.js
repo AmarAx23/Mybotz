@@ -2,7 +2,7 @@ const { pushMessage } = require('../../lib/line');
 const { getAllUsers } = require('../../lib/users');
 const { buildTodayPlanMessage } = require('../../lib/healthplan');
 const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
-const { buildMonthlySummaryMessage } = require('../../lib/reports');
+const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { todayStr } = require('../../lib/calc');
 
@@ -74,6 +74,8 @@ module.exports = async (req, res) => {
         if (isFirstOfMonth(today)) {
           const monthly = await buildMonthlySummaryMessage(user.user_id);
           if (monthly) messages.push(monthly);
+          const monthlyImage = await buildMonthlySummaryImage(user.user_id);
+          if (monthlyImage) messages.push(monthlyImage);
         }
       }
 
