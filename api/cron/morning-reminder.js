@@ -6,6 +6,8 @@ const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { buildWeeklyChartMessage } = require('../../lib/weeklychart');
+const { buildCoachNarrative } = require('../../lib/aicoach');
+const { aiConfigured } = require('../../lib/ai');
 const { todayStr, addDays } = require('../../lib/calc');
 const { isPausedOn } = require('../../lib/pause');
 
@@ -37,6 +39,7 @@ module.exports = async (req, res) => {
   const reminderText = 'สวัสดีตอนเช้า ☀️ อย่าลืมชั่งน้ำหนักแล้วพิมพ์ตัวเลขส่งมาบันทึกด้วยนะ';
 
   const failures = [];
+  const startedAt = Date.now();
   for (const user of users) {
     if (!user.user_id) continue;
     if (!isApproved(user, user.user_id)) continue; // ยังไม่ได้รับอนุญาต (รหัสเชิญ)
@@ -68,6 +71,13 @@ module.exports = async (req, res) => {
         try {
           const coach = await buildWeeklyCoachMessage(user.user_id, { apply: true });
           if (coach) {
+            // โค้ชเขียนเป็นภาษาคน (AI) ต่อท้ายข้อความโค้ช ถ้าพังหรือใช้เวลานานเกินไปก็ข้าม ไม่กระทบข้อความอื่น
+            if (aiConfigured() && Date.now() - startedAt < 35000) {
+              try {
+                const note = await buildCoachNarrative(user.user_id, coach.text);
+                if (note) coach.text += '\n\n💬 ' + note;
+              } catch (e) { console.error('coach narrative error for', user.user_id, e); }
+            }
             messages.push(coach);
             // กราฟก้าว/แคลอรี่ 7 วัน (ถ้าสร้างไม่ได้ก็ข้าม ไม่ให้กระทบข้อความอื่น)
             try { weeklyChart = await buildWeeklyChartMessage(user.user_id); } catch (e) { console.error('weekly chart error for', user.user_id, e); }
