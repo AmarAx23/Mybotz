@@ -8,7 +8,7 @@ const { getUserLogs, buildSummaryMessage } = require('../../lib/weight');
 const { buildMonthlySummaryMessage, buildMonthlySummaryImage } = require('../../lib/reports');
 const { buildWeeklyCoachMessage } = require('../../lib/coach');
 const { buildWeeklyChartMessage } = require('../../lib/weeklychart');
-const { buildWeeklyRewardsRecap } = require('../../lib/steps');
+const { buildWeeklyRewardsRecap, buildMorningStepLines } = require('../../lib/steps');
 const { buildCoachNarrative } = require('../../lib/aicoach');
 const { aiConfigured } = require('../../lib/ai');
 const { todayStr, addDays } = require('../../lib/calc');
@@ -109,6 +109,14 @@ module.exports = async (req, res) => {
       }
 
       if (messages.length === 0) continue;
+
+      // ผลเมื่อวาน/ให้กำลังใจ (ต่อท้ายข้อความทักทายแรก ไม่เพิ่มจำนวนข้อความ) พังก็ข้าม
+      if (messages[0].type === 'text') {
+        try {
+          const lines = await buildMorningStepLines(user);
+          if (lines.length) messages[0] = { ...messages[0], text: messages[0].text + '\n' + lines.join('\n') };
+        } catch (e) { console.error('morning step lines error for', user.user_id, e); }
+      }
 
       // เพิ่งพักจบเมื่อวาน: ทักต้อนรับกลับ (แทรกในข้อความแรก ไม่เพิ่มจำนวนข้อความ)
       if (user.pause_until === addDays(today, -1) && messages[0].type === 'text') {
