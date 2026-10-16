@@ -9,6 +9,7 @@ const { todayStr, addDays, parseDeadlineDays } = require('../lib/calc');
 const { logSteps, buildStepsStatusMessage } = require('../lib/steps');
 const { readStepsFromImage } = require('../lib/stepsvision');
 const { buildWeeklyCoachMessage } = require('../lib/coach');
+const { buildWeeklyChartMessage } = require('../lib/weeklychart');
 const { isAdmin, notifyAdmin } = require('../lib/admin');
 const { accessRequired, isApproved, tryApprove, NEED_CODE_TEXT } = require('../lib/access');
 const { setupRichMenu } = require('../lib/richmenu');
@@ -261,7 +262,14 @@ async function handleTextEvent(event) {
 
   if (/^(สรุปสัปดาห์|weekly)/i.test(text)) {
     const coach = await buildWeeklyCoachMessage(userId, { apply: false });
-    await replyMessage(replyToken, [coach || { type: 'text', text: 'ยังไม่มีข้อมูลก้าว/อาหาร/น้ำหนักพอสำหรับสรุปสัปดาห์นี้ ลองบันทึกสักสองสามวันก่อนนะ' }]);
+    const out = [coach || { type: 'text', text: 'ยังไม่มีข้อมูลก้าว/อาหาร/น้ำหนักพอสำหรับสรุปสัปดาห์นี้ ลองบันทึกสักสองสามวันก่อนนะ' }];
+    try {
+      const chart = await buildWeeklyChartMessage(userId);
+      if (chart) out.push(chart);
+    } catch (err) {
+      console.error('weekly chart error:', err);
+    }
+    await replyMessage(replyToken, out);
     return;
   }
 
